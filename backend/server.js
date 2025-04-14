@@ -1,4 +1,3 @@
-// server.js
 const express = require("express");
 const cors = require("cors");
 const youtubedl = require("youtube-dl-exec");
@@ -12,20 +11,17 @@ app.use(express.json());
 
 const DOWNLOAD_DIR = path.join(__dirname, "downloads");
 
-// Ensure downloads directory exists
 if (!fs.existsSync(DOWNLOAD_DIR)) {
   fs.mkdirSync(DOWNLOAD_DIR);
 }
 
-// Simple rate limiting implementation without external package
 const requestCounts = {};
-const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
-const RATE_LIMIT_MAX = 10; // 10 requests per window
+const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; 
+const RATE_LIMIT_MAX = 10; 
 
 const simpleRateLimiter = (req, res, next) => {
   const ip = req.ip || req.connection.remoteAddress;
   
-  // Initialize or reset expired counters
   if (!requestCounts[ip] || Date.now() > requestCounts[ip].resetTime) {
     requestCounts[ip] = {
       count: 1,
@@ -34,17 +30,14 @@ const simpleRateLimiter = (req, res, next) => {
     return next();
   }
   
-  // Increment counter if within window
   if (requestCounts[ip].count < RATE_LIMIT_MAX) {
     requestCounts[ip].count++;
     return next();
   }
   
-  // Rate limit exceeded
   return res.status(429).json({ error: "Too many requests, please try again later" });
 };
 
-// Detect the platform from the URL
 function detectPlatform(url) {
   if (!url) return null;
   
@@ -68,7 +61,6 @@ function detectPlatform(url) {
   return null;
 }
 
-// Get video info without downloading
 app.get("/info", simpleRateLimiter, async (req, res) => {
   const videoUrl = req.query.url;
   if (!videoUrl) return res.status(400).json({ error: "No video URL provided" });
@@ -85,7 +77,6 @@ app.get("/info", simpleRateLimiter, async (req, res) => {
       addHeader: ['referer:youtube.com', 'user-agent:googlebot']
     });
 
-    // Handle platform-specific transformations
     let formats = [];
     
     if (platform === 'youtube') {
@@ -100,7 +91,6 @@ app.get("/info", simpleRateLimiter, async (req, res) => {
         }))
         .sort((a, b) => b.quality - a.quality);
     } else {
-      // For non-YouTube platforms, we'll typically have fewer format options
       formats = info.formats
         .filter(format => format.ext === 'mp4' || format.ext === 'webm')
         .map(format => ({
@@ -113,7 +103,6 @@ app.get("/info", simpleRateLimiter, async (req, res) => {
         .sort((a, b) => b.quality - a.quality);
     }
 
-    // If no formats were found, provide a default
     if (formats.length === 0 && info.url) {
       formats = [{
         formatId: 'best',
@@ -149,22 +138,18 @@ app.get("/download", simpleRateLimiter, async (req, res) => {
   if (!platform) return res.status(400).json({ error: "Unsupported platform" });
 
   try {
-    // Generate unique filename to handle concurrent downloads
     const fileId = crypto.randomBytes(8).toString('hex');
     const outputPath = path.join(DOWNLOAD_DIR, `${fileId}.mp4`);
 
-    // Get video info first to get title for the filename
     const info = await youtubedl(videoUrl, {
       dumpSingleJson: true,
       noCheckCertificates: true,
       noWarnings: true
     });
 
-    // Sanitize the title for use as a filename
     const sanitizedTitle = (info.title || `${platform}_video`).replace(/[^a-z0-9]/gi, '_').toLowerCase();
     const outputFilename = `${sanitizedTitle}.mp4`;
 
-    // Download the video with the selected format
     await youtubedl(videoUrl, {
       output: outputPath,
       format: formatId,
@@ -173,15 +158,12 @@ app.get("/download", simpleRateLimiter, async (req, res) => {
       addHeader: ['referer:youtube.com', 'user-agent:googlebot']
     });
 
-    // Set content disposition with the sanitized title
     res.setHeader('Content-Disposition', `attachment; filename="${outputFilename}"`);
     res.setHeader('Content-Type', 'video/mp4');
 
-    // Stream the file to the client
     const fileStream = fs.createReadStream(outputPath);
     fileStream.pipe(res);
 
-    // Delete file after sending
     fileStream.on('end', () => {
       fs.unlink(outputPath, (err) => {
         if (err) console.error("Error deleting file:", err);
@@ -197,7 +179,6 @@ app.get("/download", simpleRateLimiter, async (req, res) => {
   } catch (error) {
     console.error("Download error:", error);
     
-    // Provide more specific error messages
     if (error.message?.includes('Video unavailable')) {
       return res.status(400).json({ error: "Video is unavailable or private" });
     }
@@ -210,18 +191,15 @@ app.get("/download", simpleRateLimiter, async (req, res) => {
   }
 });
 
-// Health check endpoint
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
-// Global error handler
 app.use((err, req, res, next) => {
   console.error("Unhandled error:", err);
   res.status(500).json({ error: "An unexpected error occurred" });
 });
 
-// Clean up any leftover files in the downloads directory on startup
 fs.readdir(DOWNLOAD_DIR, (err, files) => {
   if (err) {
     console.error("Error reading downloads directory:", err);
