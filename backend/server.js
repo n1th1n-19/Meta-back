@@ -44,10 +44,37 @@ const simpleRateLimiter = (req, res, next) => {
   return res.status(429).json({ error: "Too many requests, please try again later" });
 };
 
+// Detect the platform from the URL
+function detectPlatform(url) {
+  if (!url) return null;
+  
+  try {
+    const urlObj = new URL(url);
+    const hostname = urlObj.hostname.toLowerCase();
+    
+    if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
+      return 'youtube';
+    } else if (hostname.includes('twitter.com') || hostname.includes('x.com')) {
+      return 'twitter';
+    } else if (hostname.includes('instagram.com')) {
+      return 'instagram';
+    } else if (hostname.includes('facebook.com') || hostname.includes('fb.com')) {
+      return 'facebook';
+    }
+  } catch (e) {
+    console.error("URL parsing error:", e);
+  }
+  
+  return null;
+}
+
 // Get video info without downloading
 app.get("/info", simpleRateLimiter, async (req, res) => {
   const videoUrl = req.query.url;
   if (!videoUrl) return res.status(400).json({ error: "No video URL provided" });
+
+  const platform = detectPlatform(videoUrl);
+  if (!platform) return res.status(400).json({ error: "Unsupported platform" });
 
   try {
     const info = await youtubedl(videoUrl, {
@@ -58,29 +85,57 @@ app.get("/info", simpleRateLimiter, async (req, res) => {
       addHeader: ['referer:youtube.com', 'user-agent:googlebot']
     });
 
-    // Filter and transform format data to send only what's needed
-    const formats = info.formats
-      .filter(format => format.ext === 'mp4' && format.vcodec !== 'none' && format.acodec !== 'none')
-      .map(format => ({
-        formatId: format.format_id,
-        quality: format.quality || 0,
-        qualityLabel: format.quality_label || 'Unknown',
-        resolution: format.resolution || 'Unknown',
-        filesize: format.filesize || format.filesize_approx || 0
-      }))
-      .sort((a, b) => b.quality - a.quality);
+    // Handle platform-specific transformations
+    let formats = [];
+    
+    if (platform === 'youtube') {
+      formats = info.formats
+        .filter(format => format.ext === 'mp4' && format.vcodec !== 'none' && format.acodec !== 'none')
+        .map(format => ({
+          formatId: format.format_id,
+          quality: format.quality || 0,
+          qualityLabel: format.quality_label || 'Unknown',
+          resolution: format.resolution || 'Unknown',
+          filesize: format.filesize || format.filesize_approx || 0
+        }))
+        .sort((a, b) => b.quality - a.quality);
+    } else {
+      // For non-YouTube platforms, we'll typically have fewer format options
+      formats = info.formats
+        .filter(format => format.ext === 'mp4' || format.ext === 'webm')
+        .map(format => ({
+          formatId: format.format_id,
+          quality: format.quality || 0,
+          qualityLabel: format.height ? `${format.height}p` : 'Unknown',
+          resolution: format.resolution || `${format.width}x${format.height}` || 'Unknown',
+          filesize: format.filesize || format.filesize_approx || 0
+        }))
+        .sort((a, b) => b.quality - a.quality);
+    }
+
+    // If no formats were found, provide a default
+    if (formats.length === 0 && info.url) {
+      formats = [{
+        formatId: 'best',
+        quality: 1,
+        qualityLabel: 'Best available',
+        resolution: 'Auto',
+        filesize: 0
+      }];
+    }
 
     res.json({
-      id: info.id,
-      title: info.title,
-      thumbnail: info.thumbnail,
-      duration: info.duration,
-      description: info.description?.substring(0, 200) + (info.description?.length > 200 ? '...' : ''),
-      formats
+      id: info.id || crypto.randomBytes(6).toString('hex'),
+      title: info.title || `${platform} video`,
+      thumbnail: info.thumbnail || '',
+      duration: info.duration || 0,
+      description: info.description?.substring(0, 200) + (info.description?.length > 200 ? '...' : '') || '',
+      formats,
+      platform
     });
   } catch (error) {
     console.error("Info error:", error);
-    res.status(500).json({ error: "Failed to get video information" });
+    res.status(500).json({ error: `Failed to get video information: ${error.message}` });
   }
 });
 
@@ -89,6 +144,9 @@ app.get("/download", simpleRateLimiter, async (req, res) => {
   const formatId = req.query.format || 'best[ext=mp4]';
   
   if (!videoUrl) return res.status(400).json({ error: "No video URL provided" });
+
+  const platform = detectPlatform(videoUrl);
+  if (!platform) return res.status(400).json({ error: "Unsupported platform" });
 
   try {
     // Generate unique filename to handle concurrent downloads
@@ -103,7 +161,7 @@ app.get("/download", simpleRateLimiter, async (req, res) => {
     });
 
     // Sanitize the title for use as a filename
-    const sanitizedTitle = info.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    const sanitizedTitle = (info.title || `${platform}_video`).replace(/[^a-z0-9]/gi, '_').toLowerCase();
     const outputFilename = `${sanitizedTitle}.mp4`;
 
     // Download the video with the selected format
@@ -144,7 +202,11 @@ app.get("/download", simpleRateLimiter, async (req, res) => {
       return res.status(400).json({ error: "Video is unavailable or private" });
     }
     
-    res.status(500).json({ error: "Failed to process video" });
+    if (error.message?.includes('This video is not available')) {
+      return res.status(400).json({ error: "This video is not available or may be private" });
+    }
+    
+    res.status(500).json({ error: `Failed to process video: ${error.message}` });
   }
 });
 
