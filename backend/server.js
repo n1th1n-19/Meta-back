@@ -136,8 +136,7 @@ app.get("/download", simpleRateLimiter, async (req, res) => {
 
   const platform = detectPlatform(videoUrl);
   if (!platform) return res.status(400).json({ error: "Unsupported platform" });
-
-  try {
+try {
     const fileId = crypto.randomBytes(8).toString('hex');
     const outputPath = path.join(DOWNLOAD_DIR, `${fileId}.mp4`);
 
